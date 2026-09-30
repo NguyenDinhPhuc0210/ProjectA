@@ -1,249 +1,308 @@
 # PROJECT SPECIFICATION: BOOK & HOBBY RETAILER
-*(B2C E-commerce Model - Centralized Inventory Management)*
+*(B2C E-commerce Model - Quản lý tồn kho tập trung)*
 
-> Bản đã hợp nhất: spec gốc + các bổ sung Sprint 1. Phần được thêm/sửa so với bản gốc có đánh dấu **[MỚI]** / **[SỬA]**.
-> Sprint 1 vẫn ở trạng thái chờ chốt các điểm mở tại mục 4. Sprint 2 giữ nguyên như bản gốc.
+> Tài liệu tổng quan. Luồng chi tiết, request/response mẫu, bảng Exception Flow và quy tắc validate nằm trong từng file sprint:
+> - Sprint 1 → `sprint1-auth.md` (UC01 – UC08 trong file sprint)
+> - Sprint 2 → `sprint2-catalog.md` (UC10 – UC18 trong file sprint)
+> - Database → `data-schema.md`
+>
+> Mã `UC-xx` ở đây tương ứng `UCxx` trong file sprint.
 
 ---
 
 ## 1. SYSTEM OVERVIEW
 
-### Core Roles & Business Flow
-* **Roles:** The system is streamlined with exactly 2 roles: `ROLE_CUSTOMER` and `ROLE_ADMIN`. Absolutely no other roles are permitted.
-* **B2C Model:** The system operates as a direct retailer (similar to Barnes & Noble or Kinokuniya). Users cannot create stores or list products. The entire supply chain (product approval, pricing, inventory) is controlled by the Admin.
-* **Checkout Flow:** Customer views product -> Adds to cart -> Places order (System temporarily holds inventory) -> Payment (COD/Online) -> Admin confirms -> Order shipped & completed.
-* **Polymorphic Data (Tech Flex):** The system uses a JSON data type column to store dynamic attributes. This allows combining Books (Requires: Author, ISBN, Publisher) and Hobby items (Requires: Scale, Brand, Material) into a single `products` table without data redundancy or complex EAV anti-patterns.
+### Vai trò & Luồng nghiệp vụ
+* **Roles:** Hệ thống chỉ có đúng 2 role: `ROLE_CUSTOMER` và `ROLE_ADMIN`. Tuyệt đối không có role nào khác.
+* **Mô hình B2C:** Hệ thống hoạt động như nhà bán lẻ trực tiếp (giống Barnes & Noble hoặc Kinokuniya). Người dùng không thể tạo cửa hàng hay đăng sản phẩm. Toàn bộ chuỗi cung ứng (duyệt sản phẩm, giá, tồn kho) do Admin kiểm soát.
+* **Luồng mua hàng:** Khách xem sản phẩm -> Thêm vào giỏ -> Đặt hàng (hệ thống giữ tồn kho tạm thời) -> Thanh toán (COD/Online) -> Admin xác nhận -> Giao hàng & hoàn tất.
+* **Dữ liệu đa hình (Tech Flex):** Dùng cột kiểu JSON để lưu thuộc tính động. Nhờ đó Sách (Tác giả, NXB, Số trang, ISBN) và Đồ sưu tầm/Hobby (Hãng, Tỷ lệ, Chất liệu) nằm chung một bảng `products`, không dư thừa dữ liệu và không dùng mô hình EAV.
 
 ### Tech Stack
-* **Backend:** Java, Spring Boot (Web, Data JPA, Security), JWT (JJWT), MySQL 8.0+.
-  Mandatory Architecture: Controller -> Service -> Repository. Base URL: `/api/v1`.
+* **Backend:** Java, Spring Boot (Web, Data JPA, Security), JWT (JJWT), MySQL 8.0+, Flyway.
+  Kiến trúc bắt buộc: Controller -> Service -> Repository. Base URL: `/api/v1`.
 * **Frontend:** ReactJS (Vite), React Router DOM, Axios, Ant Design / Tailwind CSS.
-* **[MỚI] Tooling:** Flyway (DB migration), springdoc-openapi (Swagger), Bucket4j (rate limit), `JavaMailSender` (SMTP), Docker Compose (MySQL), profiles `dev` / `prod`.
+* **Hỗ trợ:** springdoc-openapi (Swagger), Bucket4j (rate limit), `JavaMailSender` (SMTP), Docker Compose (MySQL), profile `dev` / `prod`.
 
-### Global Technical Conventions
+### Quy ước kỹ thuật chung
 
-**Response Wrapper (Used for ALL endpoints):**
+**Response Wrapper (dùng cho MỌI endpoint):**
 ```
-Success (with data): { "success": true,  "message": "...", "data": {...} }
-Error (validation):  { "success": false, "message": "...", "errors": {"field": "..."} }
+Thành công: { "success": true,  "message": "...", "data": {...} }
+Lỗi:        { "success": false, "message": "...", "errors": {"field": "..."} }
 ```
 
 **HTTP Status Codes:**
-| Code | Meaning |
+
+| Code | Ý nghĩa |
 |---|---|
-| 200 OK | Request succeeded. |
-| 201 Created | Resource successfully created. |
-| 400 Bad Request | Input error / validation failure / business rule violation. |
-| 401 Unauthorized | Not authenticated or invalid/expired token. |
-| 403 Forbidden | Authenticated but lacks permission (including LOCKED accounts). |
-| 404 Not Found | Resource does not exist. |
-| 409 Conflict | Data duplication (e.g., email already exists). |
-| **[MỚI]** 429 Too Many Requests | Rate limit exceeded (login, forgot-password, reset-password). |
+| 200 OK | Thành công. |
+| 201 Created | Tạo mới thành công. |
+| 400 Bad Request | Lỗi input / validation / vi phạm business rule. |
+| 401 Unauthorized | Chưa xác thực hoặc token không hợp lệ / hết hạn. |
+| 403 Forbidden | Đã xác thực nhưng không có quyền (gồm tài khoản LOCKED). |
+| 404 Not Found | Resource không tồn tại. |
+| 409 Conflict | Trùng dữ liệu (vd: email đã tồn tại). |
+| 429 Too Many Requests | Vượt giới hạn rate limit. |
 
-**Authentication [SỬA]:**
-* Endpoints marked with [🔒] require the header: `Authorization: Bearer <JWT>`.
-* The JWT payload must contain `{ userId, email, role, iat, exp }` and is valid for 24 hours. It MUST NOT contain the password.
-* **[MỚI]** `JwtAuthFilter` must re-query the user in the DB on every [🔒] request:
-  * User does not exist or is soft-deleted -> **401**.
-  * `account_status = LOCKED` -> **403**.
-  * Token `iat` is earlier than `users.password_changed_at` -> **401** (token issued before a password change/reset).
-* JWT secret must be at least 256 bits and read from an environment variable.
+**Xác thực (Authentication):**
+* Endpoint có ký hiệu [🔒] yêu cầu header `Authorization: Bearer <JWT>`.
+* JWT payload gồm `{ userId, email, role, iat, exp }`, hạn 24 giờ, **KHÔNG** chứa password.
+* Mỗi request [🔒] hệ thống kiểm tra lại user trong DB: đã xóa mềm → `401`; `LOCKED` → `403`; token phát hành trước lần đổi/reset mật khẩu gần nhất → `401`.
+* Toàn bộ `/api/v1/admin/**` chỉ dành cho `ROLE_ADMIN`.
 
-**Password Policy (System-wide) [SỬA]:**
-Minimum 8 and **maximum 64 characters**, containing at least 1 uppercase letter, 1 number, and 1 special character (`@ # $ ! % ^ & *`, etc.).
+**Password Policy (toàn hệ thống):**
+Từ 8 đến 64 ký tự, có ít nhất 1 chữ hoa, 1 chữ số và 1 ký tự đặc biệt (`@`, `#`, `$`, `!`, ...).
 
-**Soft Delete [SỬA]:**
-Core tables (`users`, `products`, `categories`) must include a `deleted_at` column. All SELECT queries must append `WHERE deleted_at IS NULL`. A soft-deleted record is considered non-existent. NEVER use a hard DELETE SQL command.
-**[MỚI]** When soft-deleting a user, release the UNIQUE keys: `email` becomes `<email>#deleted_<id>` and `phone_number` is set to `NULL`, so the person can re-register with the same email/phone without a false 409.
+**Soft Delete:**
+Các bảng lõi (`users`, `products`, `categories`) có cột `deleted_at`. Mọi câu SELECT phải kèm `WHERE deleted_at IS NULL`. Bản ghi đã xóa mềm coi như không tồn tại. TUYỆT ĐỐI không dùng lệnh `DELETE` SQL.
 
-**[MỚI] Input Normalization:**
-* `email`: `trim().toLowerCase()`, format validation, max 255 characters.
-* `phoneNumber`: normalize to `0xxxxxxxxx` (convert `+84` to `0`), regex `^0(3|5|7|8|9)\d{8}$`.
-* `fullName`: trim, 2–100 characters.
-
-**[MỚI] Centralized Error Handling (JSON in the response wrapper):**
-* Custom `AuthenticationEntryPoint` -> **401**; custom `AccessDeniedHandler` -> **403**.
-* `@RestControllerAdvice` handles: validation (400, with `errors`), duplicate (409), not found (404), rate limit (429), and unexpected errors (500, never leak stack traces).
-
-**[MỚI] Rate Limit (Bucket4j):**
-| Endpoint | Limit |
-|---|---|
-| `POST /auth/login` | 5 failed attempts / 15 min per (IP + email) |
-| `POST /auth/forgot-password` | 3 requests / 15 min per IP and per email |
-| `POST /auth/reset-password` | 10 requests / 15 min per IP |
-
-**[MỚI] Email Service:** SMTP via `JavaMailSender`, sent asynchronously (`@Async`) so response time does not reveal whether an email exists.
-
-**[MỚI] Preset Avatars:**
-* Avatar upload is **not supported**. Users pick one avatar from a fixed preset list.
-* The preset list is fixed backend configuration (enum or config file); each avatar has a `key` (e.g. `avatar_01`) and a `url`. Image files are hosted statically.
-* The DB stores only `avatar_key`, never a free-form URL.
-* A `default` avatar applies to new users and when a user resets their choice.
-
-### Database Schema — `users` **[MỚI]**
-| Column | Type | Notes |
-|---|---|---|
-| id | BIGINT PK AI | |
-| email | VARCHAR(255) | UNIQUE, NOT NULL |
-| password | VARCHAR(100) | NULL if GOOGLE |
-| full_name | VARCHAR(100) | NOT NULL |
-| phone_number | VARCHAR(15) | UNIQUE, **nullable** |
-| avatar_key | VARCHAR(50) | NOT NULL, default `'default'` |
-| role | ENUM('ROLE_CUSTOMER','ROLE_ADMIN') | NOT NULL |
-| account_status | ENUM('ACTIVE','LOCKED') | default ACTIVE |
-| auth_provider | ENUM('LOCAL','GOOGLE') | default LOCAL |
-| reset_token | CHAR(64) | stores **SHA-256 hash**, indexed |
-| reset_token_exp | DATETIME | nullable |
-| password_changed_at | DATETIME | nullable |
-| created_at / updated_at | DATETIME | |
-| deleted_at | DATETIME | nullable |
-
-Schema is managed by **Flyway** (`V1__init_users.sql`).
+**Quy tắc xuyên suốt khác:**
+* **Timezone:** Sử dụng chuẩn UTC ở mọi tầng (Database, Backend, JSON Response thêm chữ `Z`). Frontend tự xử lý hiển thị giờ Local.
+* Chuẩn hoá input (email chữ thường, SĐT về dạng `0xxxxxxxxx`, SKU chữ hoa) và xử lý lỗi tập trung, luôn trả JSON đúng wrapper.
+* Rate limit cho `login`, `forgot-password`, `reset-password`.
+* Avatar chỉ chọn từ danh sách có sẵn (không upload); DB lưu `avatar_key`.
+* **Tiền tệ:** Dùng `DECIMAL(15,0)` / `BigDecimal` (làm tròn `HALF_UP`), không dùng số thập phân. API danh sách có phân trang (`page`, `size`).
 
 ---
 
-## 2. DETAILED USE CASES — SPRINT 1 & 2
+## 2. QUY TRÌNH MUA HÀNG & QUẢN LÝ TỒN KHO
+
+* **Giỏ hàng LocalStorage:** Khách (Guest/Customer) duyệt và thêm sản phẩm vào giỏ. Dữ liệu giỏ hàng lưu ở LocalStorage của trình duyệt. Khi vào trang Checkout, client gọi API `/cart/validate` để backend kiểm tra tồn kho và giá mới nhất.
+* **Trừ giữ hàng (`reserved_quantity`) chống Deadlock:** Khi khách click "Đặt hàng", hệ thống gọi câu lệnh Native SQL `UPDATE products SET reserved_quantity = reserved_quantity + ? WHERE id = ? AND (stock_quantity - reserved_quantity) >= ?`. Nếu thành công, đơn hàng ở trạng thái `PENDING`. Hàng chỉ bị trừ thẳng khỏi `stock_quantity` khi hoàn thành giao hàng.
+* **Hủy đơn tự động:** Có cron job chạy ngầm, quét các đơn `PENDING` không xác nhận hoặc chưa thanh toán sau 24h để chuyển sang `CANCELLED` và trả lại tồn (`UPDATE products SET reserved_quantity = reserved_quantity - ? WHERE id = ?`).
+* **Snapshot địa chỉ và giá:** Giá bán và địa chỉ giao hàng tại thời điểm mua được lưu cứng (snapshot) vào bảng `order_items` và `orders`. Nếu sản phẩm đổi giá sau này, lịch sử đơn hàng cũ không bị ảnh hưởng.
+
+---
+
+## 3. DETAILED USE CASES — SPRINT 1 & 2
 
 ### GROUP 1: AUTH & ACCOUNT (SPRINT 1)
 
-#### UC-00 — Seed First Admin **[MỚI]**
-* Actor: System (on application startup) | No endpoint.
-* Uses an `ApplicationRunner`, reading `ADMIN_EMAIL`, `ADMIN_PASSWORD`, `ADMIN_FULL_NAME` from environment variables.
-* Creates the admin only when **no user with `role = ROLE_ADMIN` exists** (idempotent).
-* `ADMIN_PASSWORD` must pass the Password Policy and is hashed with BCrypt. If variables are missing or the password is invalid, the app must **fail fast** in the `prod` profile.
-* Admin is created with `account_status = ACTIVE`, `auth_provider = LOCAL`. The password is never written to logs.
-* There is no way to create an Admin through the API: `/auth/register` always creates `ROLE_CUSTOMER`.
+#### UC-00 — Seed Admin đầu tiên
+**Actor:** System | **Endpoint:** *(không có — `ApplicationRunner` khi khởi động)*
 
-#### UC-01 — Register Customer Account **[SỬA]**
-* Actor: Guest | Endpoint: `POST /api/v1/auth/register`
-* Guest sends: `email`, `password`, `fullName`, `phoneNumber` (with the normalization rules above).
-* System defaults: `role = ROLE_CUSTOMER`, `account_status = ACTIVE`, `auth_provider = LOCAL`, `avatar_key = default`. Ignore any `role`/`status` sent by the client (anti mass-assignment).
-* `email` and `phoneNumber` must be UNIQUE. The Service must check duplicates (only records with `deleted_at IS NULL`) before INSERT and return **409 Conflict** with `errors` naming the field. It must also catch `DataIntegrityViolationException` (race condition) and return 409 (never a 500).
-* Password must be hashed using BCrypt before saving.
-* Account is active immediately; no email verification required.
-* Success: **201**, `data` contains user info (no password). No auto-login.
+* Khi ứng dụng khởi động, nếu **chưa tồn tại** user nào `ROLE_ADMIN` thì tự tạo một Admin từ biến môi trường `ADMIN_EMAIL`, `ADMIN_PASSWORD`, `ADMIN_FULL_NAME`.
+* Chạy lại nhiều lần không tạo trùng (idempotent).
+* `ADMIN_PASSWORD` phải đạt Password Policy và được hash BCrypt; không ghi mật khẩu ra log.
+* Ở profile `prod`, thiếu biến môi trường hoặc mật khẩu không hợp lệ → ứng dụng **fail-fast**, không khởi động.
+* **Không có cách tạo Admin qua API** — `/auth/register` luôn tạo `ROLE_CUSTOMER`.
 
-#### UC-02 — Login **[SỬA]**
-* Actor: Guest | Endpoint: `POST /api/v1/auth/login`
-* Guest sends: `email`, `password`. Returns a JWT and basic user info if valid.
-* Processing order:
-  1. Check rate limit; exceeded -> **429**.
-  2. Find user by email with `deleted_at IS NULL`. Not found -> still run a dummy BCrypt comparison (timing-attack protection), then return **401** with the generic message.
-  3. If `auth_provider == GOOGLE`: **400** "This account was registered via Google. Please use Google Login."
-  4. Compare password. Wrong -> **401** with the same generic message.
-  5. **Only after the password is correct**, if `account_status == LOCKED` -> **403**.
-* Anti-Enumeration Protection: non-existent email, wrong password, or soft-deleted account MUST return the exact same message and status **401**: "Invalid email or password."
-* Note (accepted trade-off): the dedicated Google message (step 3) reveals that the email exists. This is a deliberate UX/security trade-off.
+---
 
-#### UC-02b — Google Login (Placeholder for Future Sprint)
-* Actor: Guest | Endpoint: `POST /api/v1/auth/google`
-* Guest sends: `idToken` (received from Google).
-* Backend verifies the token via Google API and **requires `email_verified = true`**, otherwise 400.
-* Email does not exist: auto-create user with `auth_provider = GOOGLE`, `password = NULL`, `phone_number = NULL`, `role = ROLE_CUSTOMER`, `avatar_key = default`.
-* Email exists with `auth_provider = LOCAL`: **do not auto-link**. Return 409 telling the user to log in with a password (prevents account pre-hijacking).
-* Email exists with `auth_provider = GOOGLE`: issue a standard JWT (apply the LOCKED and soft-delete checks as in UC-02).
+#### UC-01 — Đăng ký tài khoản
+**Actor:** Guest | **Endpoint:** `POST /api/v1/auth/register`
 
-#### UC-03 — Forgot & Reset Password **[SỬA]**
-* Actor: Guest | Endpoints: `POST /api/v1/auth/forgot-password` & `POST /api/v1/auth/reset-password`
-* 2-Step Flow: (1) Request Reset -> (2) Reset with Token.
+* Guest gửi: `email`, `password`, `fullName`, `phoneNumber`.
+* Hệ thống luôn gán `role = ROLE_CUSTOMER`. Mọi giá trị `role`/`status` client gửi lên đều bị bỏ qua (chống mass assignment). `ROLE_ADMIN` **không thể đăng ký qua API**.
+* Tài khoản active ngay sau đăng ký, **không cần xác thực email**.
+* `email` và `phoneNumber` phải UNIQUE. Service phải check trùng trước INSERT để trả `409`, đồng thời bắt lỗi ràng buộc DB (đăng ký đồng thời) và cũng trả `409`, không để lộ `500`.
+* Password được hash bằng **BCrypt** trước khi lưu.
+* Tài khoản mới: `account_status = ACTIVE`, `auth_provider = LOCAL`, `avatar_key = default`.
+* Thành công trả `201`, không tự động đăng nhập.
 
-**Step 1 — Forgot (body: `email`)**
-* MUST always return **HTTP 200** with a generic message, regardless of whether the email exists (Anti-enumeration).
-* Send mail only if the user exists, is not soft-deleted, has `auth_provider = LOCAL` and `account_status = ACTIVE`. GOOGLE/LOCKED accounts still get 200 but **no mail is sent**.
-* Generate a random UUID, **store its SHA-256 hash** in `users.reset_token`, and set `reset_token_exp = now + 15 minutes`. The mail link contains the raw UUID. An existing token is overwritten (old token invalidated).
-* Mail is sent asynchronously (`@Async`); rate limit applies.
+---
 
-**Step 2 — Reset (body: `token`, `newPassword`)**
-* Hash the received token and look up the user by `reset_token`. Not found, expired, or user soft-deleted -> **400** "Invalid or expired token."
-* `newPassword` must pass the Password Policy and is hashed with BCrypt.
-* On success: set `reset_token = NULL`, `reset_token_exp = NULL` (single use) and `password_changed_at = now` (invalidates all old JWTs). Return 200.
+#### UC-02 — Đăng nhập
+**Actor:** Guest | **Endpoint:** `POST /api/v1/auth/login`
 
-#### UC-04 — View & Update Profile **[SỬA]**
-* Actor: Customer [🔒], Admin [🔒] | Endpoints: `GET` & `PATCH /api/v1/users/me`
-* GET returns current user info based on `userId` in the JWT, including `avatarKey` and `avatarUrl` (derived from the key). NEVER return `password`, `reset_token`, `reset_token_exp`, `deleted_at`, or `password_changed_at`.
-* PATCH is a partial update — only fields present in the body are processed: `fullName`, `phoneNumber`, `avatarKey`.
-  * Omitted fields are left unchanged. `fullName`/`phoneNumber` = `null` -> **400**.
-  * `avatarKey` must be in the preset list, otherwise **400**. `avatarKey = null` resets to `default`.
-  * `email`, `role`, `auth_provider`, `account_status`, `avatarUrl` are rejected/ignored.
-  * `phoneNumber` uniqueness check excludes the current user's ID; a conflict with another user returns **409**.
-* Success: 200 with the updated user data.
+* Guest gửi `email` + `password`, nhận về JWT và thông tin user cơ bản nếu hợp lệ.
+* Tài khoản đăng ký qua Google (`auth_provider = GOOGLE`) → HTTP `400`, hướng dẫn dùng Đăng nhập bằng Google.
+* Tài khoản `account_status = LOCKED` → HTTP `403`, chỉ kiểm tra **sau khi** mật khẩu đúng.
+* Tài khoản đã soft-delete (`deleted_at IS NOT NULL`) → HTTP `401`.
+* **Bảo vệ User Enumeration:** email không tồn tại, sai mật khẩu, tài khoản đã xóa mềm dùng **chung một message và status `401`**; khi không tìm thấy user vẫn chạy so sánh BCrypt giả để chống timing attack.
+* **Rate limit:** tối đa 5 lần sai / 15 phút theo cặp (IP + email), vượt → `429`.
 
-#### UC-04a — List Avatar Presets **[MỚI]**
-* Actor: Public | Endpoint: `GET /api/v1/avatars`
-* Returns `[{ "key": "avatar_01", "url": "/static/avatars/avatar_01.png" }, ...]`, including `default`.
-* Data comes from fixed configuration; no DB query.
+---
 
-#### UC-04b — Change Password **[MỚI]**
-* Actor: Customer [🔒], Admin [🔒] | Endpoint: `PATCH /api/v1/users/me/password`
-* Body: `currentPassword`, `newPassword`.
-* Only for `auth_provider = LOCAL`; GOOGLE accounts get **400**.
-* Wrong `currentPassword` -> **400** (not 401, so the frontend does not auto-logout). `newPassword` must pass the Password Policy and **differ** from the current password.
-* On success: store the new BCrypt hash, set `password_changed_at = now`, return 200 with a **new JWT** so the current session continues; all older tokens become invalid.
+#### UC-02b — Đăng nhập bằng Google *(Backlog — Sprint sau)*
+**Actor:** Guest | **Endpoint:** `POST /api/v1/auth/google`
 
-#### UC-04c — Logout **[MỚI]**
-* Actor: Customer, Admin | **No backend endpoint.**
-* JWT is stateless: logout means the frontend deletes the token and redirects to Login.
-* Server-side revocation (blacklist/refresh token) is in the backlog. Meanwhile, tokens are automatically invalidated on password change/reset, account lock, or account deletion (via `JwtAuthFilter`).
+* Guest gửi `idToken` nhận từ Google; Backend xác thực qua Google API và **bắt buộc `email_verified = true`**.
+* Email chưa tồn tại → tự tạo user `auth_provider = GOOGLE`, `password = NULL`, `phone_number = NULL`, `role = ROLE_CUSTOMER`.
+* Email đã tồn tại với `auth_provider = LOCAL` → **không tự liên kết**, trả `409` (chống account pre-hijacking).
+* Email đã tồn tại với `auth_provider = GOOGLE` → cấp JWT chuẩn (áp dụng kiểm tra LOCKED / soft-delete như UC-02).
 
-### Frontend — Sprint 1 **[MỚI]**
-* **Pages:** Register, Login, Forgot Password, Reset Password (reads `token` from the query string), Profile (view/edit, change password, **choose avatar**).
-* **Avatar picker:** call `GET /avatars`, show a grid; the user selects one and saves via `PATCH /users/me` with `avatarKey`.
-* **AuthContext:** holds user + token; provides `login`, `logout`, `updateUser`.
-* **Route guards:** `ProtectedRoute` (requires login) and `AdminRoute` (requires `ROLE_ADMIN`).
-* **Axios:** interceptor attaches `Authorization`. **401** -> clear token, go to Login. **403** -> show "account locked" message. **429** -> show "try again later" message.
-* Client-side form validation follows the Password Policy and the phone regex.
+---
 
-### Infrastructure — Sprint 1 **[MỚI]**
-Flyway, Swagger/OpenAPI, Docker Compose for MySQL, `dev`/`prod` profiles, CORS configured via environment variables, unit tests for `AuthService` (register, all login branches, expired/reused reset token).
+#### UC-03 — Quên mật khẩu & Đặt lại mật khẩu
+**Actor:** Guest | **Endpoints:** `POST /api/v1/auth/forgot-password` + `POST /api/v1/auth/reset-password`
+
+* Luồng 2 bước: **(1) Yêu cầu reset** → **(2) Đặt lại bằng token**.
+* **Lưu trữ token:** sinh UUID, lưu **hash SHA-256** vào `users.reset_token` + `users.reset_token_exp`. **Không dùng Redis, không dùng JWT** cho flow này.
+* Token hết hạn sau **15 phút**, chỉ dùng **1 lần** — reset thành công thì cả 2 cột về `NULL`.
+* Gửi lại khi token cũ còn hạn → ghi đè token mới, token cũ tự vô hiệu.
+* Bước 1 luôn trả HTTP `200` dù email có tồn tại hay không → tránh user enumeration. Tài khoản `GOOGLE` hoặc `LOCKED` vẫn trả `200` nhưng **không gửi mail**.
+* Email gửi **bất đồng bộ** (`@Async`) để thời gian phản hồi không lộ email có tồn tại. Link: `https://[domain]/reset-password?token=<uuid>`. Cần cấu hình **Spring Mail**.
+* Reset thành công cập nhật `password_changed_at` → mọi JWT cũ bị vô hiệu.
+* Áp dụng rate limit cho cả hai bước.
+
+---
+
+#### UC-04 — Xem thông tin cá nhân
+**Actor:** Customer 🔒, Admin 🔒 | **Endpoint:** `GET /api/v1/users/me`
+
+* Trả thông tin user hiện tại dựa trên `userId` trong JWT: `email`, `fullName`, `phoneNumber`, `role`, `avatarKey` + `avatarUrl`, `authProvider`, `accountStatus`, `createdAt`.
+* **KHÔNG** bao giờ trả `password`, `reset_token`, `reset_token_exp`, `deleted_at`, `password_changed_at`.
+* User trong token đã bị xóa mềm hoặc token phát hành trước lần đổi mật khẩu → `401`; tài khoản `LOCKED` → `403`.
+
+---
+
+#### UC-05 — Cập nhật thông tin cá nhân
+**Actor:** Customer 🔒, Admin 🔒 | **Endpoint:** `PATCH /api/v1/users/me`
+
+* Dùng **PATCH** (partial update) — chỉ xử lý các field có mặt trong body: `fullName`, `phoneNumber`, `avatarKey`.
+* Không gửi field → giữ nguyên. `fullName`/`phoneNumber` gửi `null` → `400`. `avatarKey = null` → đặt lại `default`.
+* `avatarKey` phải nằm trong danh sách avatar có sẵn (UC-08), sai → `400`.
+* **Không cho phép** đổi `email`, `role`, `auth_provider`, `account_status` qua endpoint này.
+* Khi check trùng `phoneNumber` phải loại trừ chính user hiện tại; trùng với user khác → `409`.
+
+---
+
+#### UC-06 — Đổi mật khẩu
+**Actor:** Customer 🔒, Admin 🔒 | **Endpoint:** `PATCH /api/v1/users/me/password`
+
+* Gửi `currentPassword` + `newPassword`. Chỉ dành cho tài khoản `LOCAL`; tài khoản Google → `400`.
+* `currentPassword` sai → `400` (không dùng `401` để Frontend không tự đăng xuất nhầm).
+* `newPassword` phải đạt Password Policy và **khác** mật khẩu hiện tại.
+* Thành công: lưu hash mới, cập nhật `password_changed_at`, trả `200` kèm **JWT mới** để phiên hiện tại tiếp tục; các token cũ bị vô hiệu.
+
+---
+
+#### UC-07 — Đăng xuất
+**Actor:** Customer, Admin | **Endpoint:** *(không có — xử lý ở Frontend)*
+
+* JWT là stateless: đăng xuất = Frontend xóa token khỏi bộ nhớ, xóa state trong `AuthContext` và chuyển về trang Đăng nhập.
+* Backend không lưu blacklist (không dùng Redis). Token tự vô hiệu khi đổi/reset mật khẩu, khóa hoặc xóa tài khoản.
+* Thu hồi token phía server (blacklist / refresh token) nằm trong backlog.
+
+---
+
+#### UC-08 — Xem danh sách avatar có sẵn
+**Actor:** Public | **Endpoint:** `GET /api/v1/avatars`
+
+* Trả danh sách avatar cố định (`key`, `url`) từ cấu hình backend, **không truy vấn DB**.
+* Hệ thống **không hỗ trợ upload avatar**; người dùng chọn một avatar rồi lưu qua UC-05 bằng `avatarKey`.
+* DB chỉ lưu `avatar_key` (không lưu URL tự do) để tránh URL độc hại.
 
 ---
 
 ### GROUP 2: CATALOG & POLYMORPHIC PRODUCTS (SPRINT 2)
 
-#### UC-05 — Manage Categories
-* Actor: Admin [🔒] | Endpoints: CRUD at `/api/v1/admin/categories`
-* Admin can Create, Read, Update, and Delete categories (e.g., Literature, Boardgames, Figures).
-* Deletion is a Soft Delete.
-* Business Rule: Cannot delete a category if there are active products linked to it (Return HTTP 400).
+#### UC-10 — Xem danh sách danh mục (Public)
+**Actor:** Public | **Endpoint:** `GET /api/v1/categories`
 
-#### UC-06 — Create Product (Polymorphic)
-* Actor: Admin [🔒] | Endpoint: `POST /api/v1/admin/products`
-* Admin sends core fields: `sku` (UNIQUE), `name`, `base_price`, `category_id`, `product_type` (Enum: BOOK or HOBBY).
-* JSON Attributes Handling (Critical):
-  * If `product_type == BOOK`: the `attributes` JSON payload MUST contain: `{"author", "publisher", "pages", "isbn"}`.
-  * If `product_type == HOBBY`: the `attributes` JSON payload MUST contain: `{"brand", "scale", "material"}`.
-* Initial `stock_quantity` is explicitly set to 0. (Inventory is managed separately via `inventory_batches` in future sprints).
-* Return 409 if `sku` already exists.
-
-#### UC-07 — Update & Delete Product
-* Actor: Admin [🔒] | Endpoints: `PUT` & `DELETE /api/v1/admin/products/{id}`
-* Update (PUT): Admin can modify `base_price`, `name`, `thumbnail_url`, or the JSON attributes.
-* Delete (DELETE): Perform a Soft Delete (`deleted_at = NOW()`).
-* Products must be soft-deleted so historical orders linking to this `product_id` are not broken.
-
-#### UC-08 — Search & Filter Products
-* Actor: Public | Endpoint: `GET /api/v1/products`
-* Allow dynamic filtering via Query Parameters: `categoryId`, `minPrice`, `maxPrice`, `keyword` (matches product name).
-* Sorting capabilities: Newest first, Price Asc/Desc.
-* Mandatory Filter: the query MUST strictly filter out any products where `deleted_at IS NOT NULL`.
-
-#### UC-09 — View Product Details
-* Actor: Public | Endpoint: `GET /api/v1/products/{id}`
-* Returns full product details, including the dynamic JSON `attributes` object.
-* If the product is soft-deleted, return HTTP 404 (Not Found).
-* Frontend Logic (Note): the UI will check the `product_type` field to conditionally render the attributes (e.g., a Book Spec Table vs. a Hobby Spec Table).
+* Trả toàn bộ danh mục chưa xóa để Frontend dựng menu/sidebar, sắp xếp theo tên, không phân trang.
+* Mỗi danh mục kèm `productCount` — số sản phẩm **đang hiển thị** (`ACTIVE`, chưa xóa).
+* Danh mục không có sản phẩm hiển thị vẫn được trả (`productCount = 0`).
 
 ---
 
-## 3. BACKLOG
-* Admin lock/unlock users (`LOCKED`) and list users (currently no UC can set LOCKED; edit the DB directly if needed).
-* Refresh token / blacklist for real token revocation.
-* Email verification at registration.
-* Google Login (UC-02b).
+#### UC-11 — Quản lý danh mục
+**Actor:** Admin 🔒 | **Endpoints:** CRUD tại `/api/v1/admin/categories`
 
-## 4. OPEN POINTS (to finalize with Sprint 1)
-1. Frontend token storage: `localStorage` vs httpOnly cookie (affects CORS/CSRF).
-2. The concrete preset avatar list (count, file names, hosted by backend or frontend).
-3. Final rate-limit thresholds (the table above is a proposal).
-4. Email provider (SendGrid, Gmail SMTP, ...).
-5. Whether a refresh token is needed in Sprint 1 or stays in the backlog.
+* Admin có thể Tạo, Xem (danh sách + chi tiết), Cập nhật và Xóa danh mục (vd: Literature, Boardgames, Figures). Danh mục là **phẳng**, không có cây cha–con.
+* `name` phải UNIQUE (so khớp không phân biệt hoa thường và dấu); trùng → `409`.
+* Xóa là **Soft Delete**: đặt `deleted_at` và đổi `name` thành `<name>#deleted_<id>` để giải phóng khóa UNIQUE.
+* **Business Rule:** không được xóa danh mục còn sản phẩm chưa xóa (**kể cả sản phẩm `HIDDEN`**) → `400`.
+* Không có token → `401`; token của Customer → `403`.
+
+---
+
+#### UC-12 — Tạo sản phẩm (Đa hình)
+**Actor:** Admin 🔒 | **Endpoint:** `POST /api/v1/admin/products`
+
+* Admin gửi các field lõi: `sku` (UNIQUE), `name`, `description`, `basePrice`, `categoryId`, `productType` (`BOOK` hoặc `HOBBY`), `thumbnailUrl` và JSON `attributes`.
+* **Xử lý JSON Attributes (Critical):**
+  - `BOOK`: `attributes` phải có đúng `{author, publisher, pages, isbn}` (`isbn` phải đúng ISBN-10/13, kiểm tra checksum).
+  - `HOBBY`: `attributes` phải có đúng `{brand, scale, material}` (`scale` dạng `1/7`, hoặc `N/A`).
+  - Kiểm tra kiểu và giá trị từng key; **key lạ → `400`**.
+* `stock_quantity` khởi tạo bằng `0` (tồn kho quản lý riêng qua `inventory_batches` ở Sprint sau); `status` mặc định `ACTIVE`.
+* `categoryId` phải tồn tại và chưa xóa, nếu không → `400`.
+* Trả `409` nếu `sku` đã tồn tại — **kể cả khi sản phẩm mang sku đó đã bị xóa mềm**.
+
+---
+
+#### UC-13 — Xem danh sách & chi tiết sản phẩm (Admin)
+**Actor:** Admin 🔒 | **Endpoints:** `GET /api/v1/admin/products` + `GET /api/v1/admin/products/{id}`
+
+* Danh sách có phân trang, lọc theo `keyword` (tên hoặc sku), `categoryId`, `productType`, `status`, khoảng giá; sắp xếp mới nhất / giá tăng / giá giảm.
+* Admin thấy **cả sản phẩm `HIDDEN`** và `stockQuantity`, `version`; sản phẩm đã xóa mềm coi như không tồn tại (`404`).
+* Tham số sai (`minPrice > maxPrice`, `sort` lạ, `size` ngoài 1–50...) → `400`.
+
+---
+
+#### UC-14 — Cập nhật sản phẩm
+**Actor:** Admin 🔒 | **Endpoint:** `PUT /api/v1/admin/products/{id}`
+
+* Admin được sửa: `name`, `description`, `basePrice`, `categoryId`, `thumbnailUrl`, `attributes`.
+* **Không được sửa qua endpoint này:** `sku`, `productType`, `stockQuantity`, `status`. `attributes` được validate theo `productType` **hiện có** của sản phẩm.
+* Bắt buộc gửi kèm `version`; không khớp (người khác vừa sửa) → `409` (optimistic locking).
+* Đổi `base_price` **không** ảnh hưởng đơn cũ — đơn hàng sẽ lưu snapshot giá ở Sprint sau.
+
+---
+
+#### UC-15 — Ẩn / hiện sản phẩm
+**Actor:** Admin 🔒 | **Endpoint:** `PATCH /api/v1/admin/products/{id}/status`
+
+* Admin đổi `status` giữa `ACTIVE` và `HIDDEN` để tạm ngừng/bán lại mà không xóa.
+* Sản phẩm `HIDDEN` biến mất khỏi API public (UC-17, UC-18) nhưng Admin vẫn thấy ở UC-13.
+* Đặt lại đúng trạng thái hiện tại vẫn trả `200`.
+
+---
+
+#### UC-16 — Xóa sản phẩm
+**Actor:** Admin 🔒 | **Endpoint:** `DELETE /api/v1/admin/products/{id}`
+
+* Thực hiện **Soft Delete** (`deleted_at = NOW()`); **không** đổi `sku`.
+* Sản phẩm phải được xóa mềm để các đơn hàng lịch sử tham chiếu `product_id` không bị vỡ.
+* Sản phẩm đã xóa coi như không tồn tại với mọi API (kể cả Admin); xóa lại → `404`.
+
+---
+
+#### UC-17 — Tìm kiếm & Lọc sản phẩm
+**Actor:** Public | **Endpoint:** `GET /api/v1/products`
+
+* Lọc động qua query params: `categoryId`, `productType`, `minPrice`, `maxPrice`, `keyword` (khớp tên sản phẩm, không phân biệt hoa thường và dấu).
+* Sắp xếp: mới nhất (mặc định), giá tăng dần, giá giảm dần. Có phân trang (`page`, `size`).
+* **Filter bắt buộc:** chỉ trả sản phẩm `deleted_at IS NULL` **và** `status = ACTIVE`.
+* Danh sách trả DTO nhẹ (không có `attributes`) kèm `inStock`; không trả `sku`, `stockQuantity`, `status`, `version`.
+* Không có kết quả → `200` với danh sách rỗng.
+
+---
+
+#### UC-18 — Xem chi tiết sản phẩm
+**Actor:** Public | **Endpoint:** `GET /api/v1/products/{id}`
+
+* Trả đầy đủ chi tiết sản phẩm, gồm object JSON `attributes` và thông tin danh mục.
+* Sản phẩm không tồn tại, đã xóa mềm hoặc đang `HIDDEN` → `404` **cùng một message**.
+* **Logic Frontend (Ghi chú):** UI đọc `productType` để hiển thị có điều kiện (Bảng thông số Sách hoặc Bảng thông số Hobby).
+
+---
+
+## 3. BẢNG ĐỐI CHIẾU MÃ UC
+
+| Spec gốc | Mã trong tài liệu này |
+|---|---|
+| UC-01 Register | UC-01 |
+| UC-02 Login | UC-02 |
+| UC-02b Google Login | UC-02b |
+| UC-03 Forgot & Reset Password | UC-03 |
+| UC-04 View & Update Profile | UC-04 + UC-05 |
+| *(mới)* Change Password / Logout / Seed Admin / Avatars | UC-06 / UC-07 / UC-00 / UC-08 |
+| UC-05 Manage Categories | UC-11 *(+ UC-10 danh sách public)* |
+| UC-06 Create Product | UC-12 |
+| UC-07 Update & Delete Product | UC-14 + UC-16 *(+ UC-15 ẩn/hiện)* |
+| UC-08 Search & Filter Products | UC-17 |
+| UC-09 View Product Details | UC-18 *(+ UC-13 Admin xem)* |
+
+---
+
+## 4. BACKLOG (ngoài Sprint 1 & 2)
+
+* Admin khóa/mở khóa user và xem danh sách user.
+* Refresh token / blacklist để thu hồi token thật sự.
+* Xác thực email khi đăng ký.
+* Đăng nhập bằng Google (UC-02b).
+* Upload ảnh / gallery nhiều ảnh cho sản phẩm.
+* Tồn kho (`inventory_batches`), giỏ hàng, đơn hàng, thanh toán, đánh giá (các Sprint sau).
